@@ -72,11 +72,23 @@ def record_file_stats(basedir, ignore_files, ignore_paths):
     for root, dirs, files in dir_walk(basedir):
         apply_ignore(files, root, ignore_files, ignore_paths)
         apply_ignore(dirs, root, ignore_files, ignore_paths)
-        file_dict[relpath(root, basedir)] = dict([file_item(f, root)
-                                                  for f in files
-                                                  if exists(join(root, f))])
+        items = [file_item(f, root) for f in files if exists(join(root, f))]
+        items.append(file_item(".", root))
+        file_dict[relpath(root, basedir)] = dict(items)
+
     return file_dict
 
+def record_file_stats_remote(ssh_remote, remote_basedir):
+    """Copies this script to the remote host, runs it, and sends back a serialized
+    file index."""
+    with open(__file__, "r+b") as code_file:
+        cmd = "cat - > $TMPDIR/{0} && python $TMPDIR/{0} --print-index --basedir '{1}'".format(
+            basename(__file__), remote_basedir)
+        p = Popen(["ssh", ssh_remote, cmd], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        out, err = p.communicate(input=code_file.read())
+        if len(err) > 0:
+            raise Exception("Error on remote: ", err)
+        return pickle.loads(out)
 
 def dump_file_stats(basedir, ignore_files, ignore_paths):
     """serializes dict produced by record_file_stats"""
@@ -97,18 +109,6 @@ def diff_file_remote(filename, basedir, ssh_remote, remote_base_dir):
         raise Exception("Error in diff: ", err)
     return out.decode("utf-8")
 
-def record_file_stats_remote(ssh_remote, remote_basedir):
-    """Copies this script to the remote host, runs it, and sends back a serialized
-    file index."""
-    with open(__file__, "r+b") as code_file:
-        cmd = "cat - > $TMPDIR/{0} && python $TMPDIR/{0} --print-index --basedir '{1}'".format(
-            basename(__file__), remote_basedir)
-        p = Popen(["ssh", ssh_remote, cmd], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-        out, err = p.communicate(input=code_file.read())
-        if len(err) > 0:
-            raise Exception("Error on remote: ", err)
-        return pickle.loads(out)
-
 def diff_file_list(file_dict_a, file_dict_b):
     """builds a dict {
       only_in_a: {filename: (mtime, size)},
@@ -118,12 +118,18 @@ def diff_file_list(file_dict_a, file_dict_b):
     seen_dirs = set()
     only_in_a = {}
     only_in_b = {}
+    dirs_only_in_a = []
+    dirs_only_in_b = []
     changed = {}
 
-    for dir, files_a in file_dict_a.items():
+    for dir, files_a in sorted(file_dict_a.items()):
         seen_dirs.add(dir)
+        parent_excluded = next((True for only_in_a_dir in only_in_a if dir.startswith(only_in_a_dir)), None)
+        if parent_excluded:
+            continue
         if dir not in file_dict_b:
-            only_in_a.update([(join(dir, f), files_a[f]) for f in files_a])
+            only_in_a[dir + "/"] = files_a["."]
+            dirs_only_in_a.append(dir)
         else:
             seen_files = set()
             files_in_a = {}
@@ -131,6 +137,8 @@ def diff_file_list(file_dict_a, file_dict_b):
             changed_files = {}
             files_b = file_dict_b[dir]
             for f in files_a:
+                if f == ".":
+                    continue
                 seen_files.add(f)
                 if f not in files_b:
                     files_in_a[join(dir, f)] = files_a[f]
@@ -142,15 +150,20 @@ def diff_file_list(file_dict_a, file_dict_b):
 
             files_in_b.update([(join(dir, f), files_b[f])
                                for f in files_b
-                               if f not in seen_files])
+                               if f not in seen_files and f != "."])
             only_in_a.update(files_in_a)
             only_in_b.update(files_in_b)
             changed.update(changed_files)
 
-    for dir, files_b in file_dict_b.items():
-        if dir in seen_dirs:
+    for dir, files_b in sorted(file_dict_b.items()):
+        parent_excluded = next((True for only_in_b_dir in only_in_b if dir.startswith(only_in_b_dir)), None)
+        if parent_excluded:
             continue
-        only_in_b.update([(join(dir, f), files_b[f]) for f in files_b])
+
+        if dir not in seen_dirs:
+            # only_in_b.update([(join(dir, f), files_b[f]) for f in files_b])
+            only_in_b[dir + "/"] = files_b["."]
+            dirs_only_in_b.append(dir)
 
     return {"only_in_a": only_in_a, "only_in_b": only_in_b, "changed": changed}
 
@@ -241,7 +254,6 @@ if __name__ == "__main__":
         remote_basedir = basedir
         if ":" in ssh_remote:
             ssh_remote, remote_basedir = ssh_remote.split(":")
-        print(basedir, ssh_remote, remote_basedir)
         files_a = record_file_stats(basedir, args.ignore_files, args.ignore_paths)
         files_b = record_file_stats_remote(ssh_remote, remote_basedir)
         diffed = diff_file_list(files_a, files_b)
