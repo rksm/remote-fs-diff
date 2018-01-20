@@ -257,7 +257,7 @@ def print_diff(diffed: List[FileDiff], print_ediff=False, print_content_diff=Fal
 
     for diff in diffed:
         lines.extend(print_aligned(
-            "<<< The following files are only present in {}:\n ".format(ssh_remote, diff.rootdir_b),
+            "<<< The following files are only present in {}:{}\n ".format(ssh_remote, diff.rootdir_b),
             diff.only_in_b.items(),
             lambda item: item[0],
             lambda item: prin_time(item[1].mtime)))
