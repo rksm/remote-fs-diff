@@ -7,7 +7,7 @@ Copyright Robert Krahn 2018
 
 import sys
 from os import uname, stat, walk as dir_walk
-from os.path import join, exists, relpath, realpath, basename
+from os.path import join, exists, relpath, realpath, basename, expanduser
 import fnmatch
 from time import gmtime, strftime
 import argparse
@@ -15,6 +15,7 @@ import pickle
 from subprocess import PIPE, Popen
 import subprocess
 from collections import namedtuple
+import json
 
 from typing import List, IO, cast
 
@@ -23,32 +24,34 @@ if sys.version_info.major < 3:
 
 default_ignore_files = [
     ".DS_Store",
-    "objects.sqlite",
-    "node_modules",
-    "*.pid",
-    "*.tmp",
-    "*.cache",
-    "combined.js*",
     ".git",
-    "lively.next-node_modules",
-    ".*~",
-    "*~",
-    ".#*",
-    "#*",
-    "*.pyc",
-    ".mypy_cache",
-    "__pycache__",
-    ".module_cache"
+    "*.pyc"
 ]
+default_ignore_paths = []
+default_roots = None
 
-default_ignore_paths = [
-    "*/Dropbox/configs/unison/*",
-    "*/Dropbox/configs/gnupg/gpg-agent.log",
-    "*/Dropbox/configs/gnupg/S.gpg-agent",
-    "*/Dropbox/configs/gnupg/random_seed",
-    "*/opencv-test/build*",
-    "*/Projects/old_projects*"
-]
+def read_default_config():
+    global default_ignore_files
+    global default_ignore_paths
+    global default_roots
+
+    config_file = expanduser("~/.fsdiffrc")
+    if not exists(config_file):
+        return
+
+    data = None
+    with open(config_file) as f:
+        data = json.load(f)
+
+    if "ignore_files" in data:
+        default_ignore_files = data["ignore_files"]
+
+    if "ignore_paths" in data:
+        default_ignore_paths = data["ignore_paths"]
+
+    if "roots" in data:
+        default_roots = [expanduser(path) for path in data["roots"]]
+
 
 def apply_ignore(files, root, ignore_files, ignore_paths):
     """Mutates(!) files (simple file names from os.walk) so that entries matching
@@ -242,8 +245,6 @@ def print_diff(diffed: List[FileDiff], print_ediff=False, print_content_diff=Fal
     hostname = uname().nodename
     lines = []
 
-    lines.append(">" * 40 + "\n")
-
     for diff in diffed:
         lines.extend(print_aligned(
             ">>> The following files are only present in {}:{}\n ".format(hostname, diff.rootdir_a),
@@ -252,7 +253,7 @@ def print_diff(diffed: List[FileDiff], print_ediff=False, print_content_diff=Fal
             lambda item: prin_time(item[1].mtime)))
         lines.append("\n")
 
-    lines.append("<" * 40 + "\n")
+    lines.append("\n")
 
     for diff in diffed:
         lines.extend(print_aligned(
@@ -262,7 +263,7 @@ def print_diff(diffed: List[FileDiff], print_ediff=False, print_content_diff=Fal
             lambda item: prin_time(item[1].mtime)))
         lines.append("\n")
 
-    lines.append("=" * 40 + "\n")
+    lines.append("\n")
 
     for diff in diffed:
         lines.extend(print_aligned(
@@ -275,7 +276,7 @@ def print_diff(diffed: List[FileDiff], print_ediff=False, print_content_diff=Fal
         lines.append("\n")
 
     if print_ediff:
-        lines.append("=== ediff ===\n")
+        lines.append("\n=== ediff ===")
         for diff in diffed:
             lines.append("\n")
             lines.extend([
@@ -292,8 +293,10 @@ def print_diff(diffed: List[FileDiff], print_ediff=False, print_content_diff=Fal
 
 
 if __name__ == "__main__":
+    read_default_config()
+
     parser = argparse.ArgumentParser(description='Compare file trees remotely')
-    parser.add_argument('--roots', type=str, nargs='+', help='Base directories to operate from. Seperate multiple directories via spaces. If a directory string contains a ":" then the left part of the string is the local directory, the right side the directory of the remote.', required=True)
+    parser.add_argument('--roots', type=str, nargs='+', help='Base directories to operate from. Seperate multiple directories via spaces. If a directory string contains a ":" then the left part of the string is the local directory, the right side the directory of the remote.', default=default_roots)
     parser.add_argument('--print-index', action="store_true", help='Build and print the index of files. Not meant for direct usage but for remote communication via ssh. Will print a pickled index to stdout.')
     parser.add_argument('--ignore-files', type=str, nargs='+', help='file names and patterns to ignore', default=default_ignore_files)
     parser.add_argument('--ignore-paths', type=str, nargs='+', help='paths and path patterns to ignore', default=default_ignore_paths)
